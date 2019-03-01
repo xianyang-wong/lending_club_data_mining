@@ -1,0 +1,168 @@
+---
+title: "Lending Club Data Mining"
+output: html_notebook
+---
+
+This R Notebook would involve the exploration of the Lending Club Data as we try to discover findings or insights from it.
+
+```{r}
+library(tidyverse)
+library(Hmisc)
+library(purrr)
+```
+
+### Loading Data
+
+The data provided to us has been separated into two different sets. One regarding accepted loans and the other rejected. This split has occured as both sets have a different number of variables.
+
+```{r}
+accepted_df <- read.csv("../lending_club_data_mining/data/accepted_2007_to_2018Q3.csv")
+rejected_df <- read.csv("../lending_club_data_mining/data/rejected_2007_to_2018Q3.csv")
+```
+
+```{r}
+glimpse(accepted_df)
+```
+
+```{r}
+glimpse(rejected_df)
+```
+
+```{r}
+dim(accepted_df)
+dim(rejected_df)
+```
+
+A lot of the variables that is in the accepted data is missing in the rejected.
+Some of the variables can be used as targets for predictive modelling include:
+
+1. application outcome (accepted or rejected)
+2. interest rate (int_rate)
+3. grade of the loan (grade)
+4. loan is repaid or defaulted (loan_status)
+
+Most of the applied loans are rejected and not accepted (25 million vs 2.1 million)
+
+Due to the limitation of information in the rejected data, this analysis shall focus solely on the accepted loans.
+
+### Exploratory Analysis
+### Summary of Data Quality (Missing Data)
+A quick check was done on the completeness of the data for the accepted loans dataset.
+Some of the variables had a lot of missing values thus to make the analysing simpler, we will be omitting variables with more than 80% of null values.
+The table below contains the list of 26 variables are omitted along with the proportion of null values.
+```{r}
+missing_var <- accepted_df %>%
+    map_df(function(x) sum(is.na(x)/length(x))) %>%
+    gather(feature, proportion_nulls) %>%
+    filter(proportion_nulls > 0.8) %>%
+    arrange(-proportion_nulls) 
+
+missing_var
+```
+```{r}
+accepted_base <- accepted_df[colnames(accepted_df)[!(colnames(accepted_df) %in% missing_var$feature)]]
+```
+
+### Data cleaning of missing values
+```{r}
+missing_var2 <- accepted_base %>%
+    map_df(function(x) sum(is.na(x)/length(x))) %>%
+    gather(feature, proportion_nulls) %>%
+    filter((proportion_nulls <= 0.8) & (proportion_nulls > 0)) %>%
+    arrange(-proportion_nulls) 
+
+missing_var2
+```
+
+Identifying the variables with varying levels of missing values. For the purpose of this analysis, we shall categorize the variables as follows:
+i) Low - Between 0% to 1% missing
+ii) Medium - Between 1% to 20% missing
+iii) High - More than 20% missing
+```{r}
+var_missing_low <- missing_var2$feature[missing_var2$proportion_nulls <= 0.01]
+print('Variables with > 0% and <= 1% missing values')
+var_missing_low
+
+var_missing_medium <- missing_var2$feature[(missing_var2$proportion_nulls > 0.01) & (missing_var2$proportion_nulls <= 0.2)]
+print('Variables with > 1% and <= 20% missing values')
+var_missing_medium
+
+var_missing_high <- missing_var2$feature[(missing_var2$proportion_nulls > 0.2)]
+print('Variables with > 20% missing values')
+var_missing_high
+```
+
+For variables with low number of missing values we will just filter out the affected rows.
+```{r}
+for (var in var_missing_low){
+  accepted_base <- accepted_base[!is.na(accepted_base[,var]),]
+}
+```
+
+Filtering out the low missing values only created a loss of about 0.22% of the dataset which is very minimal.
+```{r}
+nrow(accepted_base) / nrow(accepted_df)
+
+```
+
+For variables with medium number of missing values we shall impute with the median if numeric and mode if categorical.
+```{r}
+mode <- function (x, na.rm) {
+    xtab <- table(x)
+    xmode <- names(which(xtab == max(xtab)))
+    if (length(xmode) > 1) xmode <- ">1 mode"
+    return(xmode)
+}
+
+for (var in var_missing_medium){
+  if (class(accepted_base[,var])=="factor"){
+    accepted_base[,var][is.na(accepted_base[,var])] <- mode(accepted_base[,var], na.rm=TRUE)
+  }
+  else if (class(accepted_base[,var])=="numeric"){
+    accepted_base[,var][is.na(accepted_base[,var])] <- mean(accepted_base[,var], na.rm=TRUE)
+  }
+}
+```
+
+For variables with a high proportion of missing values, we shall leave it as it is for now and explore the data first before carrying out any further data cleaning.
+
+Checking and assigning appropriate datatypes to each column in R
+```{r}
+str(accepted_base)
+```
+
+```{r}
+# Converting term variable from string to integer values
+accepted_base$term <- as.integer(str_extract(accepted_base$term, '\\d+'))
+
+
+
+```
+```{r}
+table(accepted_base$grade)
+```
+```{r}
+levels(accepted_base$grade)
+```
+### Data Imputation
+
+```{r}
+
+
+# accepted_base$sub_grade_clean <- impute(accepted_base$sub_grade, mode(accepted_base$sub_grade, na.rm=TRUE))
+accepted_base[accepted_base[,'sub_grade']=='','sub_grade'] <- mode(accepted_base$sub_grade, na.rm=TRUE)
+```
+```{r}
+table(accepted_base$sub_grade)
+```
+
+```{r}
+as.integer(nrow(accepted_base) * 0.01)
+```
+
+```{r}
+summary(accepted_base)
+```
+
+#### Categorical Variables
+
