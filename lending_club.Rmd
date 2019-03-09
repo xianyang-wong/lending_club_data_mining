@@ -9,6 +9,7 @@ In this report, we attempt to predict the risk of the loan being default based o
 library(tidyverse)
 #library(Hmisc)
 #library(purrr)
+library(corrplot)
 library(data.table)
 library(lubridate)
 library(DescTools)
@@ -82,19 +83,11 @@ str(loanbook)
 loanbook$grade <- factor(loanbook$grade,
                          levels=c('A','B','C','D','E','F','G'),
                          ordered=FALSE)
-loanbook$grade_ordinal <- factor(loanbook$grade,
-                         levels=c('A','B','C','D','E','F','G'),
-                         ordered=TRUE)
 loanbook$sub_grade <- factor(loanbook$sub_grade,
                              levels=c('A1','A2','A3','A4','A5','B1','B2','B3','B4','B5','C1','C2','C3','C4','C5',
                                       'D1','D2','D3','D4','D5','E1','E2','E3','E4','E5','F1','F2','F3','F4','F5',
                                       'G1','G2','G3','G4','G5'),
                              ordered=FALSE)
-loanbook$sub_grade_ordinal <- factor(loanbook$sub_grade,
-                             levels=c('A1','A2','A3','A4','A5','B1','B2','B3','B4','B5','C1','C2','C3','C4','C5',
-                                      'D1','D2','D3','D4','D5','E1','E2','E3','E4','E5','F1','F2','F3','F4','F5',
-                                      'G1','G2','G3','G4','G5'),
-                             ordered=TRUE)
 loanbook$term <- as.integer(str_extract(as.character(loanbook$term), '\\d+'))
 loanbook$emp_length <- as.integer(str_extract(as.character(loanbook$emp_length), '\\d+'))
 loanbook$home_ownership <- factor(loanbook$home_ownership, 
@@ -318,13 +311,6 @@ for(var in numerical_var){
 summary(loanbook[c(names(Filter(is.numeric, loanbook)),names(Filter(is.integer, loanbook)))])
 ```
 
-```{r}
-temp <- cor(loanbook[,numerical_var])
-temp[!lower.tri(temp)] <- 0
-test <- loanbook[,!apply(temp,2,function(x) any(x > 0.99))]
-names(test)
-```
-
 ### Categorical Variables
 ```{r}
 # categorical_var <- c(names(Filter(is.factor, loanbook)))
@@ -445,6 +431,58 @@ for (var in feature_list){
   
   model_df = rbind(model_df, data.frame(variable=var, pvalue=mean(coef(summary(model))[,4][2:length(coef(summary(model))[,4])]), aic=model$aic[[1]]))
 }
-```
-# 735065   int_rate     0.1292165  0.0006053   213.5   <2e-16 ***
 
+# write.csv(model_df, 'simple_model_results.csv',row.names=FALSE)
+```
+```{r}
+model_df = model_df[order(model_df$aic),]
+possible_var_df = model_df[(model_df$pvalue<0.1),]
+possible_var_df = possible_var_df[1:30,]
+```
+
+```{r}
+corrplot(cor(loanbook[,names(loanbook)[(names(loanbook) %in% possible_var_df$variable) & (names(loanbook) %in% numerical_var)]]), method="circle")
+```
+
+To prevent multicollinearity, the following variables are omitted from the possible list of variables:
+last_fico_range_high, last_fico_range_low, fico_range_high, fico_range_low
+```{r}
+omission_list = c('last_fico_range_high','last_fico_range_low','fico_range_high','fico_range_low','out_prncp_inv',
+                  'total_pymnt_inv','total_pymnt','collection_recovery_fee','last_pymnt_amnt','open_rv_24m',
+                  'bc_open_to_buy','num_tl_op_past_12m','sub_grade')
+possible_var_2_df = possible_var_df[!(possible_var_df$variable %in% omission_list),]
+corrplot(cor(loanbook[,names(loanbook)[(names(loanbook) %in% possible_var_2_df$variable) & (names(loanbook) %in% numerical_var)]]), method="circle")
+```
+
+Baseline Logistic Regression Model
+```{r}
+h2o.init()
+```
+
+```{r}
+h2o_train <- as.h2o(train[,c('default',names(loanbook)[(names(loanbook) %in% possible_var_2_df$variable)])])
+h2o_validation <- as.h2o(validation[,c('default',names(loanbook)[(names(loanbook) %in% possible_var_2_df$variable)])])
+```
+
+
+```{r}
+model_glm <- h2o.glm(x=names(loanbook)[(names(loanbook) %in% possible_var_2_df$variable)], y='default',
+                     training_frame=h2o_train, validation_frame=h2o_validation, 
+                     nfolds=5, family="binomial", seed=612, link="logit",
+                     compute_p_values=TRUE, lambda=0, standardize=FALSE, remove_collinear_columns=TRUE)
+```
+
+```{r}
+model_glm@model$validation_metrics
+```
+
+```{r}
+plot(h2o.performance(model_glm, h2o_validation),type='roc')
+```
+
+```{r}
+model.rf <- h2o.randomForest(x=names(loanbook)[(names(loanbook) %in% possible_var_2_df$variable)], y='default',
+                     training_frame=h2o_train, validation_frame=h2o_validation, 
+                     nfolds=5, seed=612, 
+                     ntrees=300, nbins_cats=50,categorical_encoding = "Enum")
+```
