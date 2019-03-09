@@ -3,47 +3,153 @@ title: "Lending Club Data Mining"
 output: html_notebook
 ---
 
-This R Notebook would involve the exploration of the Lending Club Data as we try to discover findings or insights from it.
+In this report, we attempt to predict the risk of the loan being default based on the past loan data. We obtained data from https://www.kaggle.com/wordsforthewise/lending-club. Two datasets were provided with one being the loans accepted while the other rejected by borrowers. As only the accepted loans has information as to whether it defaults, we chose to omit the borrower rejected loans. We also used loan data from year 2015 to 2016 as training and cross-validation set and loan data from year 2017 to 2018 as a testing set. We also compare our investment performance against Lending Club's Grading. We found that, among multiple machine learning algorithms that we tried, Logistic Regression provided a reasonable trade-off performance, and a higher return than the naive loan picking strategy can be achieved.
 
 ```{r}
 library(tidyverse)
-library(Hmisc)
-library(purrr)
+#library(Hmisc)
+#library(purrr)
+library(lubridate)
+library(DescTools)
 ```
+
+### Functions
+```{r}
+mode <- function (x, na.rm) {
+    xtab <- table(x)
+    xmode <- names(which(xtab == max(xtab)))
+    if (length(xmode) > 1) xmode <- ">1 mode"
+    return(xmode)
+}
+
+winsorize <- function (x, probs=c(0.03,0.97))
+{
+   lim <- quantile(x, probs=probs, na.rm=TRUE)
+   x[ x < lim[1] ] <- lim[1]
+   x[ x > lim[2] ] <- lim[2]
+   x
+}
+```
+
 
 ### Loading Data
 
-The data provided to us has been separated into two different sets. One regarding accepted loans and the other rejected. This split has occured as both sets have a different number of variables.
+Reading in the accepted loans dataset and filtering down to our chosen timeframe. Restricting the training and validation time period from 2015 to 2018 helps to also mitigate changes to how borrower attributes that affect their riskiness might vary across time due to other factors such as changing economic cycles which is currently not captured or reflected in the data. This subset is also deemed acceptable as it covers the majority of the disbursed loans by counts.
 
 ```{r}
-accepted_df <- read.csv("../lending_club_data_mining/data/accepted_2007_to_2018Q3.csv")
-rejected_df <- read.csv("../lending_club_data_mining/data/rejected_2007_to_2018Q3.csv")
+loanbook <- read.csv("../lending_club_data_mining/data/accepted_2007_to_2018Q3.csv")
 ```
 
 ```{r}
-glimpse(accepted_df)
+loanbook$issue_d <- dmy(paste("01-", loanbook$issue_d, sep=""))
+```
+```{r}
+Desc(year(loanbook$issue_d), main <- "Number of disbursed loans across years", plotit = TRUE)
 ```
 
 ```{r}
-glimpse(rejected_df)
+loanbook <- loanbook[year(loanbook$issue_d) %in% c(2015,2016,2017,2018),]
+```
+
+### Problem Formulation
+For this analysis, to simplify our problem, we shall categorise:
+i) Default loan statuses: Late(31-120 days), Charged Off, Default
+ii) Non-default loan statuses: Current, In Grace Period, Late (16-30 days), Fully Paid
+Based on our definition of default, across all the years, the default rate is around 12% so we have a fairly imbalanced dataset
+
+```{r}
+Desc(loanbook$loan_status, main <- "Distribution of loan status", plotit = TRUE)
 ```
 
 ```{r}
-dim(accepted_df)
-dim(rejected_df)
+loanbook$default <- as.factor(ifelse(loanbook$loan_status %in% c('Late (31-120 days)','Charged Off','Default'), 1, 0))
 ```
 
-A lot of the variables that is in the accepted data is missing in the rejected.
-Some of the variables can be used as targets for predictive modelling include:
+```{r}
+Desc(loanbook$default, main <- "Distribution of loan status", plotit = TRUE)
+```
+### Checking datatypes
+```{r}
+str(loanbook)
+```
 
-1. application outcome (accepted or rejected)
-2. interest rate (int_rate)
-3. grade of the loan (grade)
-4. loan is repaid or defaulted (loan_status)
-
-Most of the applied loans are rejected and not accepted (25 million vs 2.1 million)
-
-Due to the limitation of information in the rejected data, this analysis shall focus solely on the accepted loans.
+```{r}
+# Converting term variable from string to integer values
+loanbook$grade <- factor(loanbook$grade,
+                         levels=c('A','B','C','D','E','F','G'),
+                         ordered=FALSE)
+loanbook$grade_ordinal <- factor(loanbook$grade,
+                         levels=c('A','B','C','D','E','F','G'),
+                         ordered=TRUE)
+loanbook$sub_grade <- factor(loanbook$sub_grade,
+                             levels=c('A1','A2','A3','A4','A5','B1','B2','B3','B4','B5','C1','C2','C3','C4','C5',
+                                      'D1','D2','D3','D4','D5','E1','E2','E3','E4','E5','F1','F2','F3','F4','F5',
+                                      'G1','G2','G3','G4','G5'),
+                             ordered=FALSE)
+loanbook$sub_grade_ordinal <- factor(loanbook$sub_grade,
+                             levels=c('A1','A2','A3','A4','A5','B1','B2','B3','B4','B5','C1','C2','C3','C4','C5',
+                                      'D1','D2','D3','D4','D5','E1','E2','E3','E4','E5','F1','F2','F3','F4','F5',
+                                      'G1','G2','G3','G4','G5'),
+                             ordered=TRUE)
+loanbook$term <- as.integer(str_extract(as.character(loanbook$term), '\\d+'))
+loanbook$emp_length <- as.integer(str_extract(as.character(loanbook$emp_length), '\\d+'))
+loanbook$home_ownership <- factor(loanbook$home_ownership, 
+                                       levels=c('OWN','MORTGAGE','RENT','ANY','OTHER','NONE'), 
+                                       ordered=FALSE)
+loanbook$verified_status_flag <- ifelse(loanbook$verification_status %in% c('Verified'), 1, 0)
+loanbook$source_verified_status_flag <- ifelse(loanbook$verification_status %in% c('Source Verified'), 1, 0)
+loanbook$verification_status <- NULL
+loanbook$loan_status <- factor(loanbook$loan_status, 
+                                    levels=c('Fully Paid','Does not meet the credit policy. Status:Fully Paid',
+                                             'Current','In Grace Period','Late (16-30 days)','Late (31-120 days)',
+                                             'Does not meet the credit policy. Status:Charged Off','Charged Off',
+                                             'Default'), 
+                                    ordered=FALSE)
+loanbook$pymnt_plan_flag <- ifelse(loanbook$pymnt_plan=='y', 1, 0)
+loanbook$pymnt_plan <- NULL
+loanbook$purpose <- factor(loanbook$purpose, 
+                           levels=c('car','credit_card','debt_consolidation','education','home_improvement','house',
+                                    'major_purchase','medical','moving','other','renewable_energy','small_business',
+                                    'vacation','wedding'),
+                           ordered=FALSE)
+loanbook$title <- factor(loanbook$title, ordered=FALSE)
+loanbook$zip_code <- factor(loanbook$zip_code, ordered=FALSE)
+loanbook$addr_state <-factor(loanbook$addr_state, ordered=FALSE)
+loanbook$earliest_cr_line <- dmy(paste('01-', loanbook$earliest_cr_line, sep=''))
+loanbook$initial_list_status <- factor(loanbook$initial_list_status,
+                                       levels=c('f','w'),
+                                       ordered=FALSE)
+loanbook$last_pymnt_d <- dmy(paste('01-', loanbook$last_pymnt_d, sep=''))
+loanbook$next_pymnt_d <- dmy(paste('01-', loanbook$next_pymnt_d, sep=''))
+loanbook$last_credit_pull_d <- dmy(paste('01-', loanbook$last_credit_pull_d, sep=''))
+loanbook$application_type <- factor(loanbook$application_type, 
+                                    levels=c('Individual','Joint App'),
+                                    ordered=FALSE)
+loanbook$status_joint_verified_flag <- ifelse(loanbook$verification_status_joint %in% c('Verified'), 1, 0)
+loanbook$status_joint_source_verified_flag <- ifelse(loanbook$verification_status_joint %in% c('Source Verified'), 1, 0)
+loanbook$verification_status_joint <- NULL
+loanbook$sec_app_earliest_cr_line <- dmy(paste('01-', loanbook$sec_app_earliest_cr_line, sep=''))
+loanbook$hardship_flag <- ifelse(loanbook$hardship_flag=='Y', 1, 0)
+loanbook$hardship_type_int_only_3mths_deferral_flag <- ifelse(loanbook$hardship_type=='INTEREST ONLY-3 MONTHS DEFERRAL', 1, 0)
+loanbook$hardship_type <- NULL
+loanbook$hardship_reason <- factor(loanbook$hardship_reason, ordered=FALSE)
+loanbook$hardship_status <- factor(loanbook$hardship_status, 
+                                   levels=c('COMPLETED','ACTIVE','BROKEN'), 
+                                   ordered=FALSE)
+loanbook$hardship_start_date <- dmy(paste('01-', loanbook$hardship_start_date, sep=''))
+loanbook$hardship_end_date <- dmy(paste('01-', loanbook$hardship_end_date, sep=''))
+loanbook$payment_plan_start_date <- dmy(paste('01-', loanbook$payment_plan_start_date, sep=''))
+loanbook$hardship_loan_status <- factor(loanbook$hardship_loan_status, 
+                                        levels=c('Current','Issued','','In Grace Period','Late (16-30 days)','Late (31-120 days)'),
+                                        ordered=FALSE)
+loanbook$disbursement_method_direct_pay_flag <- ifelse(loanbook$disbursement_method=='DirectPay', 1, 0)
+loanbook$debt_settlement_flag <- ifelse(loanbook$debt_settlement_flag=='Y', 1, 0)
+loanbook$debt_settlement_flag_date <- dmy(paste('01-', loanbook$debt_settlement_flag_date, sep=''))
+loanbook$settlement_status <- factor(loanbook$settlement_status, 
+                                          levels=c('COMPLETE','ACTIVE','BROKEN'),
+                                          ordered=TRUE)
+loanbook$settlement_date <- dmy(paste('01-', loanbook$settlement_date, sep=''))
+```
 
 ### Exploratory Analysis
 ### Summary of Data Quality (Missing Data)
@@ -51,7 +157,7 @@ A quick check was done on the completeness of the data for the accepted loans da
 Some of the variables had a lot of missing values thus to make the analysing simpler, we will be omitting variables with more than 80% of null values.
 The table below contains the list of 26 variables are omitted along with the proportion of null values.
 ```{r}
-missing_var <- accepted_df %>%
+missing_var <- loanbook %>%
     map_df(function(x) sum(is.na(x)/length(x))) %>%
     gather(feature, proportion_nulls) %>%
     filter(proportion_nulls > 0.8) %>%
@@ -60,12 +166,17 @@ missing_var <- accepted_df %>%
 missing_var
 ```
 ```{r}
-accepted_base <- accepted_df[colnames(accepted_df)[!(colnames(accepted_df) %in% missing_var$feature)]]
+loanbook <- loanbook[colnames(loanbook)[!(colnames(loanbook) %in% missing_var$feature)]]
 ```
 
 ### Data cleaning of missing values
+Identifying the variables with varying levels of missing values. For the purpose of this analysis, we shall categorize the variables as follows:
+i) Low - Between 0% to 1% missing
+ii) Medium - Between 1% to 20% missing
+iii) High - More than 20% missing
+
 ```{r}
-missing_var2 <- accepted_base %>%
+missing_var2 <- loanbook %>%
     map_df(function(x) sum(is.na(x)/length(x))) %>%
     gather(feature, proportion_nulls) %>%
     filter((proportion_nulls <= 0.8) & (proportion_nulls > 0)) %>%
@@ -74,10 +185,7 @@ missing_var2 <- accepted_base %>%
 missing_var2
 ```
 
-Identifying the variables with varying levels of missing values. For the purpose of this analysis, we shall categorize the variables as follows:
-i) Low - Between 0% to 1% missing
-ii) Medium - Between 1% to 20% missing
-iii) High - More than 20% missing
+
 ```{r}
 var_missing_low <- missing_var2$feature[missing_var2$proportion_nulls <= 0.01]
 print('Variables with > 0% and <= 1% missing values')
@@ -94,75 +202,188 @@ var_missing_high
 
 For variables with low number of missing values we will just filter out the affected rows.
 ```{r}
+original_nrow = nrow(loanbook)
 for (var in var_missing_low){
-  accepted_base <- accepted_base[!is.na(accepted_base[,var]),]
+  loanbook <- loanbook[!is.na(loanbook[,var]),]
 }
 ```
 
-Filtering out the low missing values only created a loss of about 0.22% of the dataset which is very minimal.
+Filtering out the low missing values only created a loss of less than 1% of the dataset which is very minimal.
 ```{r}
-nrow(accepted_base) / nrow(accepted_df)
-
+1 - (nrow(loanbook) / original_nrow)
 ```
 
 For variables with medium number of missing values we shall impute with the median if numeric and mode if categorical.
 ```{r}
-mode <- function (x, na.rm) {
-    xtab <- table(x)
-    xmode <- names(which(xtab == max(xtab)))
-    if (length(xmode) > 1) xmode <- ">1 mode"
-    return(xmode)
-}
-
 for (var in var_missing_medium){
-  if (class(accepted_base[,var])=="factor"){
-    accepted_base[,var][is.na(accepted_base[,var])] <- mode(accepted_base[,var], na.rm=TRUE)
+  if (class(loanbook[,var])=="factor"){
+    loanbook[,var][is.na(loanbook[,var])] <- mode(loanbook[,var], na.rm=TRUE)
   }
-  else if (class(accepted_base[,var])=="numeric"){
-    accepted_base[,var][is.na(accepted_base[,var])] <- mean(accepted_base[,var], na.rm=TRUE)
+  else if (class(loanbook[,var]) %in% c("numeric","integer")){
+    loanbook[,var][is.na(loanbook[,var])] <- median(loanbook[,var], na.rm=TRUE)
   }
 }
 ```
 
-For variables with a high proportion of missing values, we shall leave it as it is for now and explore the data first before carrying out any further data cleaning.
-
-Checking and assigning appropriate datatypes to each column in R
+For variables with a high proportion of missing values, we shall carry out more detailed imputation.
+For the following variables mths_since_recent_bc_dlq, mths_since_last_major_derog, mths_since_recent_revol_delinq, mths_since_last_delinq and mths_since_rcnt_il we would first control for outliers on the upper end as they tend to be highly right skewed then impute the missing values as the max values for each variable. This is done as the NAs actually represent the borrowers who have never had any delinquent behavior and the reason as such we impute them with the maximum number of months since the last delinquent act as we feel that people who last committed a delinquent act a long time ago should be of fairly similar risk to those that have never commited such delinquent acts before.
 ```{r}
-str(accepted_base)
+for(var in c('mths_since_recent_bc_dlq','mths_since_last_major_derog','mths_since_recent_revol_delinq',
+                'mths_since_last_delinq','mths_since_rcnt_il')){
+  loanbook[,var] <- winsorize(loanbook[,var], probs=c(0,0.99))
+  loanbook[,var][is.na(loanbook[,var])] <- max(loanbook[,var], na.rm=TRUE)
+               }
+```
+
+For the other variables with high proportion of missing values, they are imputed with the median values based on their respective Lending Club's assigned risk sub grading.
+```{r}
+for(var in c('il_util','all_util','open_acc_6m','total_cu_tl','inq_last_12m','open_act_il','open_il_12m','open_il_24m',
+             'total_bal_il','open_rv_12m','open_rv_24m','max_bal_bc','inq_fi')){
+
+loanbook[,var][is.na(loanbook[,var])] <- ave(loanbook[,var], 
+                                             loanbook$sub_grade, 
+                                             FUN=function(x) median(x, na.rm = T))[is.na(loanbook[,var])] 
+}
+```
+
+### Initial Simple features engineered
+```{r}
+loanbook$fico_range <- (loanbook$fico_range_low + loanbook$fico_range_high) / 2
+loanbook$last_fico_range <- (loanbook$last_fico_range_low + loanbook$last_fico_range_high) / 2
+```
+
+### Univariate Analysis
+Looking at the histogram and summary statistics of the float and integer variables, the following data treatment was carried out:
+i) Winsorization to 1% and 99%th percentile for annual_income and dti
+ii) Winsorization to 0% and 99%th percentile for delinq_2yrs, open_acc, pub_rec, revol_bal, revol_util, total_acc, out_prncp, out_prncp_inv,
+total_rec_int, total_rec_late_fee, recoveries, collection_recovery_fee, last_pymnt_amnt,
+collections_12_mths_ex_med, acc_now_delinq, tot_coll_amt, tot_cur_bal, open_acc_6m, open_act_il,
+open_il_12m, open_il_24m, total_bal_il, il_util, open_rv_12m, open_rv_24m, max_bal_bc,
+all_util, total_rev_hi_lim, inq_fi, total_cu_tl, inq_last_12m, acc_open_past_24mths, avg_cur_bal,
+bc_open_to_buy, bc_util, chargeoff_within_12_mth, delinq_amnt, mo_sin_old_il_acct, mo_sin_old_rev_tl_op, 
+mo_sin_rcnt_rev_tl_op, mo_sin_rcnt_tl, mort_acc, mths_since_recent_bc, num_accts_ever_120_pd, num_actv_bc_tl,
+num_actv_rev_tl, num_bc_sats, num_bc_tl, num_il_tl, num_op_rev_tl, num_rev_accts, num_rev_tl_bal_gt_0, num_sats,
+num_tl_120dpd_2m, num_tl_30dpd, num_tl_90g_dpd_24m, num_tl_op_past_12m, pub_rec_bankruptcies, tax_liens,
+tot_hi_cred_lim, total_bal_ex_mort, total_bc_limit, total_il_high_credit_limit
+iii) Winsorization to 1% and 100%th percentile for last_fico_range
+iv) Dropping of policy code as there was no variation in that variable
+
+```{r}
+for(var in c('annual_inc','dti')){
+  loanbook[,var] <- winsorize(loanbook[,var], probs=c(0.01,0.99))
+}
 ```
 
 ```{r}
-# Converting term variable from string to integer values
-accepted_base$term <- as.integer(str_extract(accepted_base$term, '\\d+'))
-
-
-
-```
-```{r}
-table(accepted_base$grade)
-```
-```{r}
-levels(accepted_base$grade)
-```
-### Data Imputation
-
-```{r}
-
-
-# accepted_base$sub_grade_clean <- impute(accepted_base$sub_grade, mode(accepted_base$sub_grade, na.rm=TRUE))
-accepted_base[accepted_base[,'sub_grade']=='','sub_grade'] <- mode(accepted_base$sub_grade, na.rm=TRUE)
-```
-```{r}
-table(accepted_base$sub_grade)
+for(var in c('delinq_2yrs','open_acc','pub_rec','revol_bal','revol_util','total_acc','out_prncp','out_prncp_inv',
+'total_rec_int','total_rec_late_fee','recoveries','collection_recovery_fee','last_pymnt_amnt',
+'collections_12_mths_ex_med','acc_now_delinq','tot_coll_amt','tot_cur_bal','open_acc_6m','open_act_il',
+'open_il_12m','open_il_24m','total_bal_il','il_util','open_rv_12m','open_rv_24m','max_bal_bc',
+'all_util','total_rev_hi_lim','inq_fi','total_cu_tl','inq_last_12m','acc_open_past_24mths','avg_cur_bal',
+'bc_open_to_buy','bc_util','chargeoff_within_12_mths','delinq_amnt','mo_sin_old_il_acct','mo_sin_old_rev_tl_op',
+'mo_sin_rcnt_rev_tl_op','mo_sin_rcnt_tl','mort_acc','mths_since_recent_bc','num_accts_ever_120_pd','num_actv_bc_tl',
+'num_actv_rev_tl','num_bc_sats','num_bc_tl','num_il_tl','num_op_rev_tl','num_rev_accts','num_rev_tl_bal_gt_0','num_sats',
+'num_tl_120dpd_2m','num_tl_30dpd','num_tl_90g_dpd_24m','num_tl_op_past_12m','pub_rec_bankruptcies','tax_liens',
+'tot_hi_cred_lim','total_bal_ex_mort','total_bc_limit','total_il_high_credit_limit')){
+  loanbook[,var] <- winsorize(loanbook[,var], probs=c(0.00,0.99))
+}
 ```
 
 ```{r}
-as.integer(nrow(accepted_base) * 0.01)
+loanbook$last_fico_range <- winsorize(loanbook$last_fico_range, probs=c(0.01,1))
 ```
 
 ```{r}
-summary(accepted_base)
+loanbook$policy_code <- NULL
 ```
 
-#### Categorical Variables
+Distribution and summary statistics of cleaned numerical variables
+```{r}
+numerical_var <- c(names(Filter(is.numeric, loanbook)),names(Filter(is.integer, loanbook)))
+par(mfrow=c(3,4))
+for(var in numerical_var){
+    hist(loanbook[[var]],main = as.character(var))
+}
+summary(loanbook[c(names(Filter(is.numeric, loanbook)),names(Filter(is.integer, loanbook)))])
+```
+
+
+### Categorical Variables
+```{r}
+# categorical_var <- c(names(Filter(is.factor, loanbook)))
+# categorical_var <- categorical_var[!(categorical_var %in% c('id','emp_title','loan_status','url','desc','zip_code','addr_state',
+#                                                             'hardship_loan_status','default',''))]
+# for(var in categorical_var){
+#     print(table(loanbook[[var]]))
+# }
+```
+
+A lot of blank values in the desc variable thus it would be tricky using it to help identify defaulters. Simple text preprocessing and a word cloud is generated for both defaulters and non-defaulters. However, there appears to be an overlap for the common words amongst both groups of borrowers.
+```{r}
+loan_desc<-as.data.table(loanbook%>% mutate(desc_clean=gsub(pattern = "Borrower added on ",replacement = "",x = desc)))
+loan_desc[,desc_clean:=gsub(pattern = "<br>",replacement = "",x = desc_clean)]
+loan_desc[,desc_clean:=gsub(pattern = "[^0-9A-Za-z ]",replacement = "",x = desc_clean)]
+```
+
+```{r}
+description <- as.character(loan_desc[default==1,desc_clean])
+#create corpus from this variable
+corpus_desc = Corpus(VectorSource(description))
+#pre-process this corpus by applying various transformations
+corpus_desc <-  tm_map(corpus_desc, removePunctuation)
+corpus_desc <-  tm_map(corpus_desc, content_transformer(tolower))
+corpus_desc <-  tm_map(corpus_desc, removeNumbers)
+corpus_desc <-  tm_map(corpus_desc, stripWhitespace)
+corpus_desc <-  tm_map(corpus_desc, removeWords, stopwords('english'))
+corpus_desc <-  tm_map(corpus_desc, stemDocument)
+
+description_nd <- as.character(loan_desc[default==0,desc_clean])
+#create corpus from this variable
+corpus_desc_nd <-  Corpus(VectorSource(description_nd))
+#pre-process this corpus by applying various transformations
+corpus_desc_nd <-  tm_map(corpus_desc_nd, removePunctuation)
+corpus_desc_nd <-  tm_map(corpus_desc_nd, content_transformer(tolower))
+corpus_desc_nd <-  tm_map(corpus_desc_nd, removeNumbers)
+corpus_desc_nd <-  tm_map(corpus_desc_nd, stripWhitespace)
+corpus_desc_nd <-  tm_map(corpus_desc_nd, removeWords, stopwords('english'))
+corpus_desc_nd <-  tm_map(corpus_desc_nd, stemDocument)
+
+
+#directly use corpus in wordcloud
+wordcloud(corpus,min.freq = 10000,random.order = F,colors = brewer.pal(8,"Dark2"))
+wordcloud(corpus_nd,min.freq = 10000,random.order = F,colors = brewer.pal(8,"Dark2"))
+```
+
+```{r}
+employee_title<-as.data.table(loanbook%>% mutate(emp_title_clean=gsub(pattern = "[^0-9A-Za-z ]",replacement = "",x = emp_title)))
+```
+
+```{r}
+#create corpus from this variable
+corpus_emp_title = Corpus(VectorSource(as.character(employee_title[,emp_title_clean])))
+#pre-process this corpus by applying various transformations
+corpus_emp_title <-  tm_map(corpus_emp_title, removePunctuation)
+corpus_emp_title <-  tm_map(corpus_emp_title, content_transformer(tolower))
+corpus_emp_title <-  tm_map(corpus_emp_title, removeNumbers)
+corpus_emp_title <-  tm_map(corpus_emp_title, stripWhitespace)
+corpus_emp_title <-  tm_map(corpus_emp_title, removeWords, stopwords('english'))
+corpus_emp_title <-  tm_map(corpus_emp_title, stemDocument)
+
+wordcloud(corpus_emp_title,min.freq = 5000,random.order = F,colors = brewer.pal(8,"Dark2"))
+```
+
+
+```{r}
+
+```
+
+
+
+
+
+### Modelling
+Creation of training and test data sets
+```{r}
+# train = loanbook[year(loanbook$issue_d)]
+```
 
