@@ -9,8 +9,12 @@ In this report, we attempt to predict the risk of the loan being default based o
 library(tidyverse)
 #library(Hmisc)
 #library(purrr)
+library(data.table)
 library(lubridate)
 library(DescTools)
+library(tm)
+library(SnowballC)
+library(wordcloud)
 ```
 
 ### Functions
@@ -266,7 +270,7 @@ num_actv_rev_tl, num_bc_sats, num_bc_tl, num_il_tl, num_op_rev_tl, num_rev_accts
 num_tl_120dpd_2m, num_tl_30dpd, num_tl_90g_dpd_24m, num_tl_op_past_12m, pub_rec_bankruptcies, tax_liens,
 tot_hi_cred_lim, total_bal_ex_mort, total_bc_limit, total_il_high_credit_limit
 iii) Winsorization to 1% and 100%th percentile for last_fico_range
-iv) Dropping of policy code as there was no variation in that variable
+iv) Dropping variables with no or very little variation (prevent singularity error): policy_code, acc_now_delinq, chargeoff_within_12_mths, delinq_amnt, num_tl_120dpd_2m, num_tl_30dpd, status_joint_verified_flag, status_joint_source_verified_flag
 
 ```{r}
 for(var in c('annual_inc','dti')){
@@ -295,6 +299,13 @@ loanbook$last_fico_range <- winsorize(loanbook$last_fico_range, probs=c(0.01,1))
 
 ```{r}
 loanbook$policy_code <- NULL
+loanbook$acc_now_delinq <- NULL
+loanbook$chargeoff_within_12_mths <- NULL
+loanbook$delinq_amnt <- NULL
+loanbook$num_tl_120dpd_2m <- NULL
+loanbook$num_tl_30dpd <- NULL
+loanbook$status_joint_verified_flag <- NULL
+loanbook$status_joint_source_verified_flag <- NULL
 ```
 
 Distribution and summary statistics of cleaned numerical variables
@@ -307,6 +318,12 @@ for(var in numerical_var){
 summary(loanbook[c(names(Filter(is.numeric, loanbook)),names(Filter(is.integer, loanbook)))])
 ```
 
+```{r}
+temp <- cor(loanbook[,numerical_var])
+temp[!lower.tri(temp)] <- 0
+test <- loanbook[,!apply(temp,2,function(x) any(x > 0.99))]
+names(test)
+```
 
 ### Categorical Variables
 ```{r}
@@ -318,7 +335,7 @@ summary(loanbook[c(names(Filter(is.numeric, loanbook)),names(Filter(is.integer, 
 # }
 ```
 
-A lot of blank values in the desc variable thus it would be tricky using it to help identify defaulters. Simple text preprocessing and a word cloud is generated for both defaulters and non-defaulters. However, there appears to be an overlap for the common words amongst both groups of borrowers.
+A lot of blank values in the desc variable thus it would be tricky using it to help identify defaulters. Out of curiosity, simple text preprocessing and a word cloud is generated for both defaulters and non-defaulters. However, there appears to be an overlap for the common words amongst both groups of borrowers.
 ```{r}
 loan_desc<-as.data.table(loanbook%>% mutate(desc_clean=gsub(pattern = "Borrower added on ",replacement = "",x = desc)))
 loan_desc[,desc_clean:=gsub(pattern = "<br>",replacement = "",x = desc_clean)]
@@ -350,8 +367,8 @@ corpus_desc_nd <-  tm_map(corpus_desc_nd, stemDocument)
 
 
 #directly use corpus in wordcloud
-wordcloud(corpus,min.freq = 10000,random.order = F,colors = brewer.pal(8,"Dark2"))
-wordcloud(corpus_nd,min.freq = 10000,random.order = F,colors = brewer.pal(8,"Dark2"))
+wordcloud(corpus_desc,min.freq = 10000,random.order = F,colors = brewer.pal(8,"Dark2"))
+wordcloud(corpus_desc_nd,min.freq = 10000,random.order = F,colors = brewer.pal(8,"Dark2"))
 ```
 
 ```{r}
@@ -374,7 +391,14 @@ wordcloud(corpus_emp_title,min.freq = 5000,random.order = F,colors = brewer.pal(
 
 
 ```{r}
-
+loanbook$emp_title_clean <- gsub(pattern = "[^0-9A-Za-z ]",replacement = "", tolower(loanbook$emp_title))
+job_title_list <- c('account','supervisor','owner','sale','engineer','teacher','driver','assistant','manager','director',
+                    'nurse','analyst','specialist','technician')
+for(job in job_title_list){
+  loanbook$emp_title_clean[grepl(job,loanbook$emp_title_clean)] <- job
+}
+loanbook$emp_title_clean[!(loanbook$emp_title_clean %in% job_title_list)] <- 'others'
+loanbook$emp_title_clean <- factor(loanbook$emp_title_clean, ordered=FALSE)
 ```
 
 
@@ -384,6 +408,43 @@ wordcloud(corpus_emp_title,min.freq = 5000,random.order = F,colors = brewer.pal(
 ### Modelling
 Creation of training and test data sets
 ```{r}
-# train = loanbook[year(loanbook$issue_d)]
+train = loanbook[year(loanbook$issue_d) %in% c(2015,2016),]
+validation = loanbook[year(loanbook$issue_d) %in% c(2017,2018),]
 ```
+
+### Feature Selection
+List of feature selection variables.
+Simple Logistic Regression
+```{r}
+feature_list <- c('loan_amnt','funded_amnt','funded_amnt_inv','term','int_rate','installment','grade','sub_grade','emp_length','home_ownership',
+                  'annual_inc','purpose','title','addr_state','dti','delinq_2yrs','fico_range_low','fico_range_high','inq_last_6mths',
+                  'mths_since_last_delinq','open_acc','pub_rec','revol_bal','revol_util','total_acc','initial_list_status','out_prncp',
+                  'out_prncp_inv','total_pymnt','total_pymnt_inv','total_rec_prncp','total_rec_int','total_rec_late_fee','recoveries',
+                  'collection_recovery_fee','last_pymnt_amnt','last_fico_range_high','last_fico_range_low','collections_12_mths_ex_med',
+                  'mths_since_last_major_derog','application_type','tot_coll_amt','tot_cur_bal','open_acc_6m','open_act_il',
+                  'open_il_12m','open_il_24m','mths_since_rcnt_il','total_bal_il','il_util','open_rv_12m','open_rv_24m','max_bal_bc','all_util',
+                  'total_rev_hi_lim','inq_fi','total_cu_tl','inq_last_12m','acc_open_past_24mths','avg_cur_bal','bc_open_to_buy','bc_util',
+                  'mo_sin_old_il_acct','mo_sin_old_rev_tl_op','mo_sin_rcnt_rev_tl_op','mo_sin_rcnt_tl',
+                  'mort_acc','mths_since_recent_bc','mths_since_recent_bc_dlq','mths_since_recent_inq','mths_since_recent_revol_delinq',
+                  'num_accts_ever_120_pd','num_actv_bc_tl','num_actv_rev_tl','num_bc_sats','num_bc_tl','num_il_tl','num_op_rev_tl','num_rev_accts',
+                  'num_rev_tl_bal_gt_0','num_sats','num_tl_90g_dpd_24m','num_tl_op_past_12m','pct_tl_nvr_dlq',
+                  'percent_bc_gt_75','pub_rec_bankruptcies','tax_liens','tot_hi_cred_lim','total_bal_ex_mort','total_bc_limit',
+                  'total_il_high_credit_limit','hardship_flag','hardship_reason','disbursement_method','debt_settlement_flag',
+                  'grade_ordinal','sub_grade_ordinal','verified_status_flag','source_verified_status_flag','pymnt_plan_flag',
+                  'hardship_type_int_only_3mths_deferral_flag','disbursement_method_direct_pay_flag',
+                  'fico_range','last_fico_range','emp_title_clean')
+```
+
+
+```{r}
+model_df <- data.frame(variable=character(), coefficient=numeric(), pvalue=numeric(), aic=numeric())
+for (var in feature_list){
+  print(var)
+  model = glm(default ~ ., data = train[,c('default',var)], family = "binomial")
+  summary(model)
+  
+  model_df = rbind(model_df, data.frame(variable=var, pvalue=mean(coef(summary(model))[,4][2:length(coef(summary(model))[,4])]), aic=model$aic[[1]]))
+}
+```
+# 735065   int_rate     0.1292165  0.0006053   213.5   <2e-16 ***
 
