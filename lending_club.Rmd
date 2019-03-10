@@ -7,8 +7,6 @@ In this report, we attempt to predict the risk of the loan being default based o
 
 ```{r}
 library(tidyverse)
-#library(Hmisc)
-#library(purrr)
 library(corrplot)
 library(data.table)
 library(lubridate)
@@ -457,6 +455,7 @@ corrplot(cor(loanbook[,names(loanbook)[(names(loanbook) %in% possible_var_2_df$v
 
 Baseline Logistic Regression Model
 ```{r}
+library(h2o)
 h2o.init()
 ```
 
