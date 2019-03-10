@@ -399,13 +399,13 @@ validation = loanbook[year(loanbook$issue_d) %in% c(2017,2018),]
 ```
 
 ### Feature Selection
-List of feature selection variables.
-Simple Logistic Regression
+List of feature selection variables. This list that we would be intially iterating through has been carefully selected to ensure that variables that would not leak information about whether the loan defaults (data not available before point of loan origination) and for non-informative features to be omitted (eg. loan_id).
+Simple Logistic Regression would be built for each of these variables individually. We would then use the model results from those individual models to help us identify the more predictive variables from which we can attempt to build a multivariate model.
 ```{r}
 feature_list <- c('loan_amnt','funded_amnt','funded_amnt_inv','term','int_rate','installment','grade','sub_grade','emp_length','home_ownership',
                   'annual_inc','purpose','title','addr_state','dti','delinq_2yrs','fico_range_low','fico_range_high','inq_last_6mths',
                   'mths_since_last_delinq','open_acc','pub_rec','revol_bal','revol_util','total_acc','initial_list_status',
-                  'total_pymnt','total_pymnt_inv','last_pymnt_amnt','last_fico_range_high','last_fico_range_low','collections_12_mths_ex_med',
+                  'total_pymnt','total_pymnt_inv','last_pymnt_amnt','collections_12_mths_ex_med',
                   'mths_since_last_major_derog','application_type','tot_coll_amt','tot_cur_bal','open_acc_6m','open_act_il',
                   'open_il_12m','open_il_24m','mths_since_rcnt_il','total_bal_il','il_util','open_rv_12m','open_rv_24m','max_bal_bc','all_util',
                   'total_rev_hi_lim','inq_fi','total_cu_tl','inq_last_12m','acc_open_past_24mths','avg_cur_bal','bc_open_to_buy','bc_util',
@@ -415,9 +415,9 @@ feature_list <- c('loan_amnt','funded_amnt','funded_amnt_inv','term','int_rate',
                   'num_rev_tl_bal_gt_0','num_sats','num_tl_90g_dpd_24m','num_tl_op_past_12m','pct_tl_nvr_dlq',
                   'percent_bc_gt_75','pub_rec_bankruptcies','tax_liens','tot_hi_cred_lim','total_bal_ex_mort','total_bc_limit',
                   'total_il_high_credit_limit','hardship_flag','hardship_reason','disbursement_method',
-                  'grade_ordinal','sub_grade_ordinal','verified_status_flag','source_verified_status_flag','pymnt_plan_flag',
+                  'verified_status_flag','source_verified_status_flag','pymnt_plan_flag',
                   'hardship_type_int_only_3mths_deferral_flag','disbursement_method_direct_pay_flag',
-                  'fico_range','last_fico_range','emp_title_clean')
+                  'fico_range','emp_title_clean')
 ```
 
 
@@ -432,9 +432,10 @@ for (var in feature_list){
 
 # write.csv(model_df, 'simple_model_results.csv',row.names=FALSE)
 ```
+
 ```{r}
 model_df = model_df[order(model_df$aic),]
-possible_var_df = model_df[(model_df$pvalue<0.1),]
+possible_var_df = model_df[(model_df$pvalue<0.05),]
 possible_var_df = possible_var_df[1:30,]
 ```
 
@@ -443,11 +444,13 @@ corrplot(cor(loanbook[,names(loanbook)[(names(loanbook) %in% possible_var_df$var
 ```
 
 To prevent multicollinearity, the following variables are omitted from the possible list of variables:
-last_fico_range_high, last_fico_range_low, fico_range_high, fico_range_low
+fico_range_high, fico_range_low, out_prncp_inv, total_pymnt_inv, total_pymnt, collection_recovery_fee, last_pymnt_amnt,
+open_rv_24m, bc_open_to_buy, num_tl_op_past_12m, sub_grade, open_il_24m, tot_hi_cred_lim, inq_last_12m
 ```{r}
-omission_list = c('last_fico_range_high','last_fico_range_low','fico_range_high','fico_range_low','out_prncp_inv',
+omission_list = c('fico_range_high','fico_range_low','out_prncp_inv',
                   'total_pymnt_inv','total_pymnt','collection_recovery_fee','last_pymnt_amnt','open_rv_24m',
-                  'bc_open_to_buy','num_tl_op_past_12m','sub_grade')
+                  'bc_open_to_buy','num_tl_op_past_12m','sub_grade','open_il_24m','tot_hi_cred_lim',
+                  'inq_last_12m')
 possible_var_2_df = possible_var_df[!(possible_var_df$variable %in% omission_list),]
 corrplot(cor(loanbook[,names(loanbook)[(names(loanbook) %in% possible_var_2_df$variable) & (names(loanbook) %in% numerical_var)]]), method="circle")
 ```
@@ -498,7 +501,7 @@ model_rf@model$validation_metrics
 ```
 
 ```{r}
-plot(h2o.performance(model_rf,validation),type='roc')
+plot(h2o.performance(model_rf,h2o_validation),type='roc')
 ```
 
 
